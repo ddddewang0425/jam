@@ -1,4 +1,5 @@
-# MetaverseDev
+# Welcome To ChefVision !!!
 
-This repository is dedicated to building an AI-powered cooking assistant model called 'ChefVision', designed for use in an Augmented Reality (AR) environment with MetaQuest 3.
+Our brand-new ChefVision supports you to cook everything as a master degree!!!
 
+With our product, you can cook everything you want!
