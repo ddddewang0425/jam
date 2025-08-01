@@ -1,0 +1,290 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 43,
+   "id": "60f7e43e",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "from openai import OpenAI\n",
+    "import base64\n",
+    "import requests\n",
+    "import firebase_admin\n",
+    "from firebase_admin import credentials, storage\n",
+    "import uuid\n",
+    "import os\n",
+    "\n",
+    "def encode_image_to_base64(path):\n",
+    "    with open(path, \"rb\") as image_file:\n",
+    "        encoded_string = base64.b64encode(image_file.read()).decode(\"utf-8\")\n",
+    "    return encoded_string\n",
+    "\n",
+    "if not firebase_admin._apps:\n",
+    "    cred = credentials.Certificate(\"/home/ddddewang/Desktop/jams-f92b1-firebase-adminsdk-fbsvc-8651bbf671.json\")\n",
+    "    firebase_admin.initialize_app(cred, {\n",
+    "        'storageBucket': 'jams-f92b1.appspot.com'\n",
+    "    })\n",
+    "else:\n",
+    "    app = firebase_admin.get_app()\n",
+    "class ImageUploader:\n",
+    "    def __init__(self):\n",
+    "        pass\n",
+    "    def upload_to_firebase(self, image_path):\n",
+    "        bucket = storage.bucket()\n",
+    "        blob = bucket.blob(f\"uploads/{uuid.uuid4()}{os.path.splitext(image_path)[1]}\")\n",
+    "        blob.upload_from_filename(image_path)\n",
+    "        blob.make_public()\n",
+    "        return blob.public_url\n",
+    "\n",
+    "class LLMChatBot:\n",
+    "    def __init__(self, model_name=\"gpt-4o\", temperature=0.4, key=None):\n",
+    "        self.img_uploader = ImageUploader()\n",
+    "        self.model_name = model_name\n",
+    "        self.temperature = temperature\n",
+    "        self.messages = []\n",
+    "        assert key is not None, \"API key must be provided\"\n",
+    "        self.client = OpenAI(\n",
+    "            api_key=key\n",
+    "        )\n",
+    "        print(\"LLMChatBot is initialized with model:\", self.model_name)\n",
+    "\n",
+    "    def add_message(self, role, content):\n",
+    "        self.messages.append({\"role\": role, \"content\": content})\n",
+    "\n",
+    "    def add_message_front(self, role, content):\n",
+    "        if len(self.messages) == 0:\n",
+    "            self.messages.append({\"role\": role, \"content\": content})\n",
+    "        else:\n",
+    "            self.messages.insert(0, {\"role\": role, \"content\": content})\n",
+    "    \n",
+    "    def pop_message(self):\n",
+    "        if self.messages:\n",
+    "            return self.messages.pop()\n",
+    "        return None\n",
+    "    \n",
+    "    def pop_message_front(self):\n",
+    "        if self.messages:\n",
+    "            return self.messages.pop(0)\n",
+    "        return None\n",
+    "\n",
+    "    def have_system_prompt(self):\n",
+    "        if len(self.messages)>0:\n",
+    "            return self.messages[0]['role'] == 'system'\n",
+    "        return False\n",
+    "    \n",
+    "    def clear_messages(self):\n",
+    "        self.messages = []\n",
+    "\n",
+    "    def get_response(self, query, store=True):\n",
+    "        if store:\n",
+    "            self.add_message(\"user\",query)\n",
+    "        response = self.client.chat.completions.create(\n",
+    "            model=self.model_name,\n",
+    "            messages=self.messages,\n",
+    "            temperature=self.temperature,\n",
+    "        )\n",
+    "        if store:\n",
+    "            self.add_message(\"assistant\", response.choices[0].message.content)\n",
+    "        return response.choices[0].message.content\n",
+    "    \n",
+    "    def get_response_vision(self, query, image_path, text_store=True, image_store=False):\n",
+    "        image_url = self.img_uploader.upload_to_firebase(image_path)\n",
+    "        # image_b64 = encode_image_to_base64(image_path)\n",
+    "        response = self.client.chat.completions.create(\n",
+    "            model=self.model_name,\n",
+    "            messages=self.messages[1:] + [{\n",
+    "                    \"role\": \"user\", \n",
+    "                    \"content\": [\n",
+    "                        {\"type\": \"text\", \"text\": query},\n",
+    "                        {\"type\": \"image_url\", \"image_url\": {\"url\": image_url}},\n",
+    "                    ], \n",
+    "                }], \n",
+    "            temperature=self.temperature,\n",
+    "        )\n",
+    "        if image_store:\n",
+    "            self.add_message(\"user\",[\n",
+    "                        {\"type\": \"text\", \"text\": query},\n",
+    "                        {\"type\": \"image_url\", \"image_url\": {\"url\": image_url}},\n",
+    "                    ])\n",
+    "            self.add_message(\"assistant\", response.choices[0].message.content)\n",
+    "        elif text_store:\n",
+    "            self.add_message(\"user\", query)\n",
+    "            self.add_message(\"assistant\", response.choices[0].message.content)\n",
+    "\n",
+    "        return response.choices[0].message.content\n",
+    "\n",
+    "class ChefBot(LLMChatBot):\n",
+    "    def __init__(self, model_name=\"gpt-4o\", temperature=0.4, key=None, system_prompt_path=\"ChefBotSystemPrompt.txt\"):\n",
+    "        super().__init__(model_name, temperature, key)\n",
+    "        self.init_system_prompt(system_prompt_path)\n",
+    "\n",
+    "    def init_system_prompt(self, system_prompt_path):\n",
+    "        if self.have_system_prompt():\n",
+    "            self.pop_message_front()\n",
+    "        self.add_message_front(\"system\",open(system_prompt_path, \"r\").read())\n",
+    "\n",
+    "    def get_response_realtime_vision(self, query, image_path=\"vision.png\", text_store=True, image_store=False):\n",
+    "        \"\"\"\n",
+    "        The parameters:\n",
+    "            - image_path: needed to be updated with the precise image name.\n",
+    "        \"\"\"\n",
+    "\n",
+    "        return self.get_response_vision(query, image_path, text_store, image_store)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 44,
+   "id": "e9c63ab8",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "LLMChatBot is initialized with model: gpt-4o\n"
+     ]
+    }
+   ],
+   "source": [
+    "apikey = open(\"/home/ddddewang/Desktop/gptapi.txt\", \"r\").read().strip()\n",
+    "MyBot = ChefBot(model_name=\"gpt-4o\", temperature=1.0, key=apikey)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 45,
+   "id": "09428082",
+   "metadata": {},
+   "outputs": [
+    {
+     "ename": "NotFound",
+     "evalue": "404 POST https://storage.googleapis.com/upload/storage/v1/b/jams-f92b1.appspot.com/o?uploadType=multipart: {\n  \"error\": {\n    \"code\": 404,\n    \"message\": \"The specified bucket does not exist.\",\n    \"errors\": [\n      {\n        \"message\": \"The specified bucket does not exist.\",\n        \"domain\": \"global\",\n        \"reason\": \"notFound\"\n      }\n    ]\n  }\n}\n: ('Request failed with status code', 404, 'Expected one of', <HTTPStatus.OK: 200>)",
+     "output_type": "error",
+     "traceback": [
+      "\u001b[31m---------------------------------------------------------------------------\u001b[39m",
+      "\u001b[31mInvalidResponse\u001b[39m                           Traceback (most recent call last)",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/blob.py:2690\u001b[39m, in \u001b[36mBlob._prep_and_do_upload\u001b[39m\u001b[34m(self, file_obj, rewind, size, content_type, client, predefined_acl, if_generation_match, if_generation_not_match, if_metageneration_match, if_metageneration_not_match, timeout, checksum, retry, command)\u001b[39m\n\u001b[32m   2689\u001b[39m \u001b[38;5;28;01mtry\u001b[39;00m:\n\u001b[32m-> \u001b[39m\u001b[32m2690\u001b[39m     created_json = \u001b[38;5;28mself\u001b[39m._do_upload(\n\u001b[32m   2691\u001b[39m         client,\n\u001b[32m   2692\u001b[39m         file_obj,\n\u001b[32m   2693\u001b[39m         content_type,\n\u001b[32m   2694\u001b[39m         size,\n\u001b[32m   2695\u001b[39m         predefined_acl,\n\u001b[32m   2696\u001b[39m         if_generation_match,\n\u001b[32m   2697\u001b[39m         if_generation_not_match,\n\u001b[32m   2698\u001b[39m         if_metageneration_match,\n\u001b[32m   2699\u001b[39m         if_metageneration_not_match,\n\u001b[32m   2700\u001b[39m         timeout=timeout,\n\u001b[32m   2701\u001b[39m         checksum=checksum,\n\u001b[32m   2702\u001b[39m         retry=retry,\n\u001b[32m   2703\u001b[39m         command=command,\n\u001b[32m   2704\u001b[39m     )\n\u001b[32m   2705\u001b[39m     \u001b[38;5;28mself\u001b[39m._set_properties(created_json)\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/blob.py:2519\u001b[39m, in \u001b[36mBlob._do_upload\u001b[39m\u001b[34m(self, client, stream, content_type, size, predefined_acl, if_generation_match, if_generation_not_match, if_metageneration_match, if_metageneration_not_match, timeout, checksum, retry, command)\u001b[39m\n\u001b[32m   2518\u001b[39m \u001b[38;5;28;01mif\u001b[39;00m size \u001b[38;5;129;01mis\u001b[39;00m \u001b[38;5;129;01mnot\u001b[39;00m \u001b[38;5;28;01mNone\u001b[39;00m \u001b[38;5;129;01mand\u001b[39;00m size <= _MAX_MULTIPART_SIZE:\n\u001b[32m-> \u001b[39m\u001b[32m2519\u001b[39m     response = \u001b[38;5;28mself\u001b[39m._do_multipart_upload(\n\u001b[32m   2520\u001b[39m         client,\n\u001b[32m   2521\u001b[39m         stream,\n\u001b[32m   2522\u001b[39m         content_type,\n\u001b[32m   2523\u001b[39m         size,\n\u001b[32m   2524\u001b[39m         predefined_acl,\n\u001b[32m   2525\u001b[39m         if_generation_match,\n\u001b[32m   2526\u001b[39m         if_generation_not_match,\n\u001b[32m   2527\u001b[39m         if_metageneration_match,\n\u001b[32m   2528\u001b[39m         if_metageneration_not_match,\n\u001b[32m   2529\u001b[39m         timeout=timeout,\n\u001b[32m   2530\u001b[39m         checksum=checksum,\n\u001b[32m   2531\u001b[39m         retry=retry,\n\u001b[32m   2532\u001b[39m         command=command,\n\u001b[32m   2533\u001b[39m     )\n\u001b[32m   2534\u001b[39m \u001b[38;5;28;01melse\u001b[39;00m:\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/blob.py:2058\u001b[39m, in \u001b[36mBlob._do_multipart_upload\u001b[39m\u001b[34m(self, client, stream, content_type, size, predefined_acl, if_generation_match, if_generation_not_match, if_metageneration_match, if_metageneration_not_match, timeout, checksum, retry, command)\u001b[39m\n\u001b[32m   2052\u001b[39m \u001b[38;5;28;01mwith\u001b[39;00m create_trace_span(\n\u001b[32m   2053\u001b[39m     name=\u001b[33m\"\u001b[39m\u001b[33mStorage.MultipartUpload/transmit\u001b[39m\u001b[33m\"\u001b[39m,\n\u001b[32m   2054\u001b[39m     attributes=extra_attributes,\n\u001b[32m   2055\u001b[39m     client=client,\n\u001b[32m   2056\u001b[39m     api_request=args,\n\u001b[32m   2057\u001b[39m ):\n\u001b[32m-> \u001b[39m\u001b[32m2058\u001b[39m     response = upload.transmit(\n\u001b[32m   2059\u001b[39m         transport, data, object_metadata, content_type, timeout=timeout\n\u001b[32m   2060\u001b[39m     )\n\u001b[32m   2062\u001b[39m     \u001b[38;5;28;01mreturn\u001b[39;00m response\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/_media/requests/upload.py:161\u001b[39m, in \u001b[36mMultipartUpload.transmit\u001b[39m\u001b[34m(self, transport, data, metadata, content_type, timeout)\u001b[39m\n\u001b[32m    159\u001b[39m     \u001b[38;5;28;01mreturn\u001b[39;00m result\n\u001b[32m--> \u001b[39m\u001b[32m161\u001b[39m \u001b[38;5;28;01mreturn\u001b[39;00m _request_helpers.wait_and_retry(retriable_request, \u001b[38;5;28mself\u001b[39m._retry_strategy)\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/_media/requests/_request_helpers.py:107\u001b[39m, in \u001b[36mwait_and_retry\u001b[39m\u001b[34m(func, retry_strategy)\u001b[39m\n\u001b[32m    106\u001b[39m     func = retry_strategy(func)\n\u001b[32m--> \u001b[39m\u001b[32m107\u001b[39m \u001b[38;5;28;01mreturn\u001b[39;00m func()\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/api_core/retry/retry_unary.py:294\u001b[39m, in \u001b[36mRetry.__call__.<locals>.retry_wrapped_func\u001b[39m\u001b[34m(*args, **kwargs)\u001b[39m\n\u001b[32m    291\u001b[39m sleep_generator = exponential_sleep_generator(\n\u001b[32m    292\u001b[39m     \u001b[38;5;28mself\u001b[39m._initial, \u001b[38;5;28mself\u001b[39m._maximum, multiplier=\u001b[38;5;28mself\u001b[39m._multiplier\n\u001b[32m    293\u001b[39m )\n\u001b[32m--> \u001b[39m\u001b[32m294\u001b[39m \u001b[38;5;28;01mreturn\u001b[39;00m retry_target(\n\u001b[32m    295\u001b[39m     target,\n\u001b[32m    296\u001b[39m     \u001b[38;5;28mself\u001b[39m._predicate,\n\u001b[32m    297\u001b[39m     sleep_generator,\n\u001b[32m    298\u001b[39m     timeout=\u001b[38;5;28mself\u001b[39m._timeout,\n\u001b[32m    299\u001b[39m     on_error=on_error,\n\u001b[32m    300\u001b[39m )\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/api_core/retry/retry_unary.py:156\u001b[39m, in \u001b[36mretry_target\u001b[39m\u001b[34m(target, predicate, sleep_generator, timeout, on_error, exception_factory, **kwargs)\u001b[39m\n\u001b[32m    154\u001b[39m \u001b[38;5;28;01mexcept\u001b[39;00m \u001b[38;5;167;01mException\u001b[39;00m \u001b[38;5;28;01mas\u001b[39;00m exc:\n\u001b[32m    155\u001b[39m     \u001b[38;5;66;03m# defer to shared logic for handling errors\u001b[39;00m\n\u001b[32m--> \u001b[39m\u001b[32m156\u001b[39m     next_sleep = _retry_error_helper(\n\u001b[32m    157\u001b[39m         exc,\n\u001b[32m    158\u001b[39m         deadline,\n\u001b[32m    159\u001b[39m         sleep_iter,\n\u001b[32m    160\u001b[39m         error_list,\n\u001b[32m    161\u001b[39m         predicate,\n\u001b[32m    162\u001b[39m         on_error,\n\u001b[32m    163\u001b[39m         exception_factory,\n\u001b[32m    164\u001b[39m         timeout,\n\u001b[32m    165\u001b[39m     )\n\u001b[32m    166\u001b[39m     \u001b[38;5;66;03m# if exception not raised, sleep before next attempt\u001b[39;00m\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/api_core/retry/retry_base.py:214\u001b[39m, in \u001b[36m_retry_error_helper\u001b[39m\u001b[34m(exc, deadline, sleep_iterator, error_list, predicate_fn, on_error_fn, exc_factory_fn, original_timeout)\u001b[39m\n\u001b[32m    209\u001b[39m     final_exc, source_exc = exc_factory_fn(\n\u001b[32m    210\u001b[39m         error_list,\n\u001b[32m    211\u001b[39m         RetryFailureReason.NON_RETRYABLE_ERROR,\n\u001b[32m    212\u001b[39m         original_timeout,\n\u001b[32m    213\u001b[39m     )\n\u001b[32m--> \u001b[39m\u001b[32m214\u001b[39m     \u001b[38;5;28;01mraise\u001b[39;00m final_exc \u001b[38;5;28;01mfrom\u001b[39;00m\u001b[38;5;250m \u001b[39m\u001b[34;01msource_exc\u001b[39;00m\n\u001b[32m    215\u001b[39m \u001b[38;5;28;01mif\u001b[39;00m on_error_fn \u001b[38;5;129;01mis\u001b[39;00m \u001b[38;5;129;01mnot\u001b[39;00m \u001b[38;5;28;01mNone\u001b[39;00m:\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/api_core/retry/retry_unary.py:147\u001b[39m, in \u001b[36mretry_target\u001b[39m\u001b[34m(target, predicate, sleep_generator, timeout, on_error, exception_factory, **kwargs)\u001b[39m\n\u001b[32m    146\u001b[39m \u001b[38;5;28;01mtry\u001b[39;00m:\n\u001b[32m--> \u001b[39m\u001b[32m147\u001b[39m     result = target()\n\u001b[32m    148\u001b[39m     \u001b[38;5;28;01mif\u001b[39;00m inspect.isawaitable(result):\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/_media/requests/upload.py:157\u001b[39m, in \u001b[36mMultipartUpload.transmit.<locals>.retriable_request\u001b[39m\u001b[34m()\u001b[39m\n\u001b[32m    153\u001b[39m result = transport.request(\n\u001b[32m    154\u001b[39m     method, url, data=payload, headers=headers, timeout=timeout\n\u001b[32m    155\u001b[39m )\n\u001b[32m--> \u001b[39m\u001b[32m157\u001b[39m \u001b[38;5;28mself\u001b[39m._process_response(result)\n\u001b[32m    159\u001b[39m \u001b[38;5;28;01mreturn\u001b[39;00m result\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/_media/_upload.py:135\u001b[39m, in \u001b[36mUploadBase._process_response\u001b[39m\u001b[34m(self, response)\u001b[39m\n\u001b[32m    134\u001b[39m \u001b[38;5;28mself\u001b[39m._finished = \u001b[38;5;28;01mTrue\u001b[39;00m\n\u001b[32m--> \u001b[39m\u001b[32m135\u001b[39m _helpers.require_status_code(response, (http.client.OK,), \u001b[38;5;28mself\u001b[39m._get_status_code)\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/_media/_helpers.py:105\u001b[39m, in \u001b[36mrequire_status_code\u001b[39m\u001b[34m(response, status_codes, get_status_code, callback)\u001b[39m\n\u001b[32m    104\u001b[39m         callback()\n\u001b[32m--> \u001b[39m\u001b[32m105\u001b[39m     \u001b[38;5;28;01mraise\u001b[39;00m InvalidResponse(\n\u001b[32m    106\u001b[39m         response,\n\u001b[32m    107\u001b[39m         \u001b[33m\"\u001b[39m\u001b[33mRequest failed with status code\u001b[39m\u001b[33m\"\u001b[39m,\n\u001b[32m    108\u001b[39m         status_code,\n\u001b[32m    109\u001b[39m         \u001b[33m\"\u001b[39m\u001b[33mExpected one of\u001b[39m\u001b[33m\"\u001b[39m,\n\u001b[32m    110\u001b[39m         *status_codes\n\u001b[32m    111\u001b[39m     )\n\u001b[32m    112\u001b[39m \u001b[38;5;28;01mreturn\u001b[39;00m status_code\n",
+      "\u001b[31mInvalidResponse\u001b[39m: ('Request failed with status code', 404, 'Expected one of', <HTTPStatus.OK: 200>)",
+      "\nDuring handling of the above exception, another exception occurred:\n",
+      "\u001b[31mNotFound\u001b[39m                                  Traceback (most recent call last)",
+      "\u001b[36mCell\u001b[39m\u001b[36m \u001b[39m\u001b[32mIn[45]\u001b[39m\u001b[32m, line 1\u001b[39m\n\u001b[32m----> \u001b[39m\u001b[32m1\u001b[39m \u001b[38;5;28mprint\u001b[39m(MyBot.get_response_vision(\u001b[33m\"\u001b[39m\u001b[33m냉장고 속 재료로 만들 수 있는 요리 레시피\u001b[39m\u001b[33m\"\u001b[39m, \u001b[33m\"\u001b[39m\u001b[33mrefrigerator_example.jpg\u001b[39m\u001b[33m\"\u001b[39m))\n",
+      "\u001b[36mCell\u001b[39m\u001b[36m \u001b[39m\u001b[32mIn[43]\u001b[39m\u001b[32m, line 83\u001b[39m, in \u001b[36mLLMChatBot.get_response_vision\u001b[39m\u001b[34m(self, query, image_path, text_store, image_store)\u001b[39m\n\u001b[32m     82\u001b[39m \u001b[38;5;28;01mdef\u001b[39;00m\u001b[38;5;250m \u001b[39m\u001b[34mget_response_vision\u001b[39m(\u001b[38;5;28mself\u001b[39m, query, image_path, text_store=\u001b[38;5;28;01mTrue\u001b[39;00m, image_store=\u001b[38;5;28;01mFalse\u001b[39;00m):\n\u001b[32m---> \u001b[39m\u001b[32m83\u001b[39m     image_url = \u001b[38;5;28mself\u001b[39m.img_uploader.upload_to_firebase(image_path)\n\u001b[32m     84\u001b[39m     \u001b[38;5;66;03m# image_b64 = encode_image_to_base64(image_path)\u001b[39;00m\n\u001b[32m     85\u001b[39m     response = \u001b[38;5;28mself\u001b[39m.client.chat.completions.create(\n\u001b[32m     86\u001b[39m         model=\u001b[38;5;28mself\u001b[39m.model_name,\n\u001b[32m     87\u001b[39m         messages=\u001b[38;5;28mself\u001b[39m.messages[\u001b[32m1\u001b[39m:] + [{\n\u001b[32m   (...)\u001b[39m\u001b[32m     94\u001b[39m         temperature=\u001b[38;5;28mself\u001b[39m.temperature,\n\u001b[32m     95\u001b[39m     )\n",
+      "\u001b[36mCell\u001b[39m\u001b[36m \u001b[39m\u001b[32mIn[43]\u001b[39m\u001b[32m, line 27\u001b[39m, in \u001b[36mImageUploader.upload_to_firebase\u001b[39m\u001b[34m(self, image_path)\u001b[39m\n\u001b[32m     25\u001b[39m bucket = storage.bucket()\n\u001b[32m     26\u001b[39m blob = bucket.blob(\u001b[33mf\u001b[39m\u001b[33m\"\u001b[39m\u001b[33muploads/\u001b[39m\u001b[38;5;132;01m{\u001b[39;00muuid.uuid4()\u001b[38;5;132;01m}\u001b[39;00m\u001b[38;5;132;01m{\u001b[39;00mos.path.splitext(image_path)[\u001b[32m1\u001b[39m]\u001b[38;5;132;01m}\u001b[39;00m\u001b[33m\"\u001b[39m)\n\u001b[32m---> \u001b[39m\u001b[32m27\u001b[39m blob.upload_from_filename(image_path)\n\u001b[32m     28\u001b[39m blob.make_public()\n\u001b[32m     29\u001b[39m \u001b[38;5;28;01mreturn\u001b[39;00m blob.public_url\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/blob.py:2985\u001b[39m, in \u001b[36mBlob.upload_from_filename\u001b[39m\u001b[34m(self, filename, content_type, client, predefined_acl, if_generation_match, if_generation_not_match, if_metageneration_match, if_metageneration_not_match, timeout, checksum, retry)\u001b[39m\n\u001b[32m   2890\u001b[39m \u001b[38;5;250m\u001b[39m\u001b[33;03m\"\"\"Upload this blob's contents from the content of a named file.\u001b[39;00m\n\u001b[32m   2891\u001b[39m \n\u001b[32m   2892\u001b[39m \u001b[33;03mThe content type of the upload will be determined in order\u001b[39;00m\n\u001b[32m   (...)\u001b[39m\u001b[32m   2982\u001b[39m \u001b[33;03m    to configure them.\u001b[39;00m\n\u001b[32m   2983\u001b[39m \u001b[33;03m\"\"\"\u001b[39;00m\n\u001b[32m   2984\u001b[39m \u001b[38;5;28;01mwith\u001b[39;00m create_trace_span(name=\u001b[33m\"\u001b[39m\u001b[33mStorage.Blob.uploadFromFilename\u001b[39m\u001b[33m\"\u001b[39m):\n\u001b[32m-> \u001b[39m\u001b[32m2985\u001b[39m     \u001b[38;5;28mself\u001b[39m._handle_filename_and_upload(\n\u001b[32m   2986\u001b[39m         filename,\n\u001b[32m   2987\u001b[39m         content_type=content_type,\n\u001b[32m   2988\u001b[39m         client=client,\n\u001b[32m   2989\u001b[39m         predefined_acl=predefined_acl,\n\u001b[32m   2990\u001b[39m         if_generation_match=if_generation_match,\n\u001b[32m   2991\u001b[39m         if_generation_not_match=if_generation_not_match,\n\u001b[32m   2992\u001b[39m         if_metageneration_match=if_metageneration_match,\n\u001b[32m   2993\u001b[39m         if_metageneration_not_match=if_metageneration_not_match,\n\u001b[32m   2994\u001b[39m         timeout=timeout,\n\u001b[32m   2995\u001b[39m         checksum=checksum,\n\u001b[32m   2996\u001b[39m         retry=retry,\n\u001b[32m   2997\u001b[39m     )\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/blob.py:2868\u001b[39m, in \u001b[36mBlob._handle_filename_and_upload\u001b[39m\u001b[34m(self, filename, content_type, *args, **kwargs)\u001b[39m\n\u001b[32m   2866\u001b[39m \u001b[38;5;28;01mwith\u001b[39;00m \u001b[38;5;28mopen\u001b[39m(filename, \u001b[33m\"\u001b[39m\u001b[33mrb\u001b[39m\u001b[33m\"\u001b[39m) \u001b[38;5;28;01mas\u001b[39;00m file_obj:\n\u001b[32m   2867\u001b[39m     total_bytes = os.fstat(file_obj.fileno()).st_size\n\u001b[32m-> \u001b[39m\u001b[32m2868\u001b[39m     \u001b[38;5;28mself\u001b[39m._prep_and_do_upload(\n\u001b[32m   2869\u001b[39m         file_obj,\n\u001b[32m   2870\u001b[39m         content_type=content_type,\n\u001b[32m   2871\u001b[39m         size=total_bytes,\n\u001b[32m   2872\u001b[39m         *args,\n\u001b[32m   2873\u001b[39m         **kwargs,\n\u001b[32m   2874\u001b[39m     )\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/blob.py:2707\u001b[39m, in \u001b[36mBlob._prep_and_do_upload\u001b[39m\u001b[34m(self, file_obj, rewind, size, content_type, client, predefined_acl, if_generation_match, if_generation_not_match, if_metageneration_match, if_metageneration_not_match, timeout, checksum, retry, command)\u001b[39m\n\u001b[32m   2705\u001b[39m     \u001b[38;5;28mself\u001b[39m._set_properties(created_json)\n\u001b[32m   2706\u001b[39m \u001b[38;5;28;01mexcept\u001b[39;00m InvalidResponse \u001b[38;5;28;01mas\u001b[39;00m exc:\n\u001b[32m-> \u001b[39m\u001b[32m2707\u001b[39m     _raise_from_invalid_response(exc)\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/blob.py:4887\u001b[39m, in \u001b[36m_raise_from_invalid_response\u001b[39m\u001b[34m(error)\u001b[39m\n\u001b[32m   4883\u001b[39m     error_message = \u001b[38;5;28mstr\u001b[39m(error)\n\u001b[32m   4885\u001b[39m message = \u001b[33mf\u001b[39m\u001b[33m\"\u001b[39m\u001b[38;5;132;01m{\u001b[39;00mresponse.request.method\u001b[38;5;132;01m}\u001b[39;00m\u001b[33m \u001b[39m\u001b[38;5;132;01m{\u001b[39;00mresponse.request.url\u001b[38;5;132;01m}\u001b[39;00m\u001b[33m: \u001b[39m\u001b[38;5;132;01m{\u001b[39;00merror_message\u001b[38;5;132;01m}\u001b[39;00m\u001b[33m\"\u001b[39m\n\u001b[32m-> \u001b[39m\u001b[32m4887\u001b[39m \u001b[38;5;28;01mraise\u001b[39;00m exceptions.from_http_status(response.status_code, message, response=response)\n",
+      "\u001b[31mNotFound\u001b[39m: 404 POST https://storage.googleapis.com/upload/storage/v1/b/jams-f92b1.appspot.com/o?uploadType=multipart: {\n  \"error\": {\n    \"code\": 404,\n    \"message\": \"The specified bucket does not exist.\",\n    \"errors\": [\n      {\n        \"message\": \"The specified bucket does not exist.\",\n        \"domain\": \"global\",\n        \"reason\": \"notFound\"\n      }\n    ]\n  }\n}\n: ('Request failed with status code', 404, 'Expected one of', <HTTPStatus.OK: 200>)"
+     ]
+    }
+   ],
+   "source": [
+    "print(MyBot.get_response_vision(\"냉장고 속 재료로 만들 수 있는 요리 레시피\", \"refrigerator_example.jpg\"))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "820eee36",
+   "metadata": {},
+   "outputs": [
+    {
+     "ename": "NotFound",
+     "evalue": "404 POST https://storage.googleapis.com/upload/storage/v1/b/jams-f92b1.appspot.com/o?uploadType=multipart: {\n  \"error\": {\n    \"code\": 404,\n    \"message\": \"The specified bucket does not exist.\",\n    \"errors\": [\n      {\n        \"message\": \"The specified bucket does not exist.\",\n        \"domain\": \"global\",\n        \"reason\": \"notFound\"\n      }\n    ]\n  }\n}\n: ('Request failed with status code', 404, 'Expected one of', <HTTPStatus.OK: 200>)",
+     "output_type": "error",
+     "traceback": [
+      "\u001b[31m---------------------------------------------------------------------------\u001b[39m",
+      "\u001b[31mInvalidResponse\u001b[39m                           Traceback (most recent call last)",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/blob.py:2690\u001b[39m, in \u001b[36mBlob._prep_and_do_upload\u001b[39m\u001b[34m(self, file_obj, rewind, size, content_type, client, predefined_acl, if_generation_match, if_generation_not_match, if_metageneration_match, if_metageneration_not_match, timeout, checksum, retry, command)\u001b[39m\n\u001b[32m   2689\u001b[39m \u001b[38;5;28;01mtry\u001b[39;00m:\n\u001b[32m-> \u001b[39m\u001b[32m2690\u001b[39m     created_json = \u001b[38;5;28mself\u001b[39m._do_upload(\n\u001b[32m   2691\u001b[39m         client,\n\u001b[32m   2692\u001b[39m         file_obj,\n\u001b[32m   2693\u001b[39m         content_type,\n\u001b[32m   2694\u001b[39m         size,\n\u001b[32m   2695\u001b[39m         predefined_acl,\n\u001b[32m   2696\u001b[39m         if_generation_match,\n\u001b[32m   2697\u001b[39m         if_generation_not_match,\n\u001b[32m   2698\u001b[39m         if_metageneration_match,\n\u001b[32m   2699\u001b[39m         if_metageneration_not_match,\n\u001b[32m   2700\u001b[39m         timeout=timeout,\n\u001b[32m   2701\u001b[39m         checksum=checksum,\n\u001b[32m   2702\u001b[39m         retry=retry,\n\u001b[32m   2703\u001b[39m         command=command,\n\u001b[32m   2704\u001b[39m     )\n\u001b[32m   2705\u001b[39m     \u001b[38;5;28mself\u001b[39m._set_properties(created_json)\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/blob.py:2519\u001b[39m, in \u001b[36mBlob._do_upload\u001b[39m\u001b[34m(self, client, stream, content_type, size, predefined_acl, if_generation_match, if_generation_not_match, if_metageneration_match, if_metageneration_not_match, timeout, checksum, retry, command)\u001b[39m\n\u001b[32m   2518\u001b[39m \u001b[38;5;28;01mif\u001b[39;00m size \u001b[38;5;129;01mis\u001b[39;00m \u001b[38;5;129;01mnot\u001b[39;00m \u001b[38;5;28;01mNone\u001b[39;00m \u001b[38;5;129;01mand\u001b[39;00m size <= _MAX_MULTIPART_SIZE:\n\u001b[32m-> \u001b[39m\u001b[32m2519\u001b[39m     response = \u001b[38;5;28mself\u001b[39m._do_multipart_upload(\n\u001b[32m   2520\u001b[39m         client,\n\u001b[32m   2521\u001b[39m         stream,\n\u001b[32m   2522\u001b[39m         content_type,\n\u001b[32m   2523\u001b[39m         size,\n\u001b[32m   2524\u001b[39m         predefined_acl,\n\u001b[32m   2525\u001b[39m         if_generation_match,\n\u001b[32m   2526\u001b[39m         if_generation_not_match,\n\u001b[32m   2527\u001b[39m         if_metageneration_match,\n\u001b[32m   2528\u001b[39m         if_metageneration_not_match,\n\u001b[32m   2529\u001b[39m         timeout=timeout,\n\u001b[32m   2530\u001b[39m         checksum=checksum,\n\u001b[32m   2531\u001b[39m         retry=retry,\n\u001b[32m   2532\u001b[39m         command=command,\n\u001b[32m   2533\u001b[39m     )\n\u001b[32m   2534\u001b[39m \u001b[38;5;28;01melse\u001b[39;00m:\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/blob.py:2058\u001b[39m, in \u001b[36mBlob._do_multipart_upload\u001b[39m\u001b[34m(self, client, stream, content_type, size, predefined_acl, if_generation_match, if_generation_not_match, if_metageneration_match, if_metageneration_not_match, timeout, checksum, retry, command)\u001b[39m\n\u001b[32m   2052\u001b[39m \u001b[38;5;28;01mwith\u001b[39;00m create_trace_span(\n\u001b[32m   2053\u001b[39m     name=\u001b[33m\"\u001b[39m\u001b[33mStorage.MultipartUpload/transmit\u001b[39m\u001b[33m\"\u001b[39m,\n\u001b[32m   2054\u001b[39m     attributes=extra_attributes,\n\u001b[32m   2055\u001b[39m     client=client,\n\u001b[32m   2056\u001b[39m     api_request=args,\n\u001b[32m   2057\u001b[39m ):\n\u001b[32m-> \u001b[39m\u001b[32m2058\u001b[39m     response = upload.transmit(\n\u001b[32m   2059\u001b[39m         transport, data, object_metadata, content_type, timeout=timeout\n\u001b[32m   2060\u001b[39m     )\n\u001b[32m   2062\u001b[39m     \u001b[38;5;28;01mreturn\u001b[39;00m response\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/_media/requests/upload.py:161\u001b[39m, in \u001b[36mMultipartUpload.transmit\u001b[39m\u001b[34m(self, transport, data, metadata, content_type, timeout)\u001b[39m\n\u001b[32m    159\u001b[39m     \u001b[38;5;28;01mreturn\u001b[39;00m result\n\u001b[32m--> \u001b[39m\u001b[32m161\u001b[39m \u001b[38;5;28;01mreturn\u001b[39;00m _request_helpers.wait_and_retry(retriable_request, \u001b[38;5;28mself\u001b[39m._retry_strategy)\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/_media/requests/_request_helpers.py:107\u001b[39m, in \u001b[36mwait_and_retry\u001b[39m\u001b[34m(func, retry_strategy)\u001b[39m\n\u001b[32m    106\u001b[39m     func = retry_strategy(func)\n\u001b[32m--> \u001b[39m\u001b[32m107\u001b[39m \u001b[38;5;28;01mreturn\u001b[39;00m func()\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/api_core/retry/retry_unary.py:294\u001b[39m, in \u001b[36mRetry.__call__.<locals>.retry_wrapped_func\u001b[39m\u001b[34m(*args, **kwargs)\u001b[39m\n\u001b[32m    291\u001b[39m sleep_generator = exponential_sleep_generator(\n\u001b[32m    292\u001b[39m     \u001b[38;5;28mself\u001b[39m._initial, \u001b[38;5;28mself\u001b[39m._maximum, multiplier=\u001b[38;5;28mself\u001b[39m._multiplier\n\u001b[32m    293\u001b[39m )\n\u001b[32m--> \u001b[39m\u001b[32m294\u001b[39m \u001b[38;5;28;01mreturn\u001b[39;00m retry_target(\n\u001b[32m    295\u001b[39m     target,\n\u001b[32m    296\u001b[39m     \u001b[38;5;28mself\u001b[39m._predicate,\n\u001b[32m    297\u001b[39m     sleep_generator,\n\u001b[32m    298\u001b[39m     timeout=\u001b[38;5;28mself\u001b[39m._timeout,\n\u001b[32m    299\u001b[39m     on_error=on_error,\n\u001b[32m    300\u001b[39m )\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/api_core/retry/retry_unary.py:156\u001b[39m, in \u001b[36mretry_target\u001b[39m\u001b[34m(target, predicate, sleep_generator, timeout, on_error, exception_factory, **kwargs)\u001b[39m\n\u001b[32m    154\u001b[39m \u001b[38;5;28;01mexcept\u001b[39;00m \u001b[38;5;167;01mException\u001b[39;00m \u001b[38;5;28;01mas\u001b[39;00m exc:\n\u001b[32m    155\u001b[39m     \u001b[38;5;66;03m# defer to shared logic for handling errors\u001b[39;00m\n\u001b[32m--> \u001b[39m\u001b[32m156\u001b[39m     next_sleep = _retry_error_helper(\n\u001b[32m    157\u001b[39m         exc,\n\u001b[32m    158\u001b[39m         deadline,\n\u001b[32m    159\u001b[39m         sleep_iter,\n\u001b[32m    160\u001b[39m         error_list,\n\u001b[32m    161\u001b[39m         predicate,\n\u001b[32m    162\u001b[39m         on_error,\n\u001b[32m    163\u001b[39m         exception_factory,\n\u001b[32m    164\u001b[39m         timeout,\n\u001b[32m    165\u001b[39m     )\n\u001b[32m    166\u001b[39m     \u001b[38;5;66;03m# if exception not raised, sleep before next attempt\u001b[39;00m\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/api_core/retry/retry_base.py:214\u001b[39m, in \u001b[36m_retry_error_helper\u001b[39m\u001b[34m(exc, deadline, sleep_iterator, error_list, predicate_fn, on_error_fn, exc_factory_fn, original_timeout)\u001b[39m\n\u001b[32m    209\u001b[39m     final_exc, source_exc = exc_factory_fn(\n\u001b[32m    210\u001b[39m         error_list,\n\u001b[32m    211\u001b[39m         RetryFailureReason.NON_RETRYABLE_ERROR,\n\u001b[32m    212\u001b[39m         original_timeout,\n\u001b[32m    213\u001b[39m     )\n\u001b[32m--> \u001b[39m\u001b[32m214\u001b[39m     \u001b[38;5;28;01mraise\u001b[39;00m final_exc \u001b[38;5;28;01mfrom\u001b[39;00m\u001b[38;5;250m \u001b[39m\u001b[34;01msource_exc\u001b[39;00m\n\u001b[32m    215\u001b[39m \u001b[38;5;28;01mif\u001b[39;00m on_error_fn \u001b[38;5;129;01mis\u001b[39;00m \u001b[38;5;129;01mnot\u001b[39;00m \u001b[38;5;28;01mNone\u001b[39;00m:\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/api_core/retry/retry_unary.py:147\u001b[39m, in \u001b[36mretry_target\u001b[39m\u001b[34m(target, predicate, sleep_generator, timeout, on_error, exception_factory, **kwargs)\u001b[39m\n\u001b[32m    146\u001b[39m \u001b[38;5;28;01mtry\u001b[39;00m:\n\u001b[32m--> \u001b[39m\u001b[32m147\u001b[39m     result = target()\n\u001b[32m    148\u001b[39m     \u001b[38;5;28;01mif\u001b[39;00m inspect.isawaitable(result):\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/_media/requests/upload.py:157\u001b[39m, in \u001b[36mMultipartUpload.transmit.<locals>.retriable_request\u001b[39m\u001b[34m()\u001b[39m\n\u001b[32m    153\u001b[39m result = transport.request(\n\u001b[32m    154\u001b[39m     method, url, data=payload, headers=headers, timeout=timeout\n\u001b[32m    155\u001b[39m )\n\u001b[32m--> \u001b[39m\u001b[32m157\u001b[39m \u001b[38;5;28mself\u001b[39m._process_response(result)\n\u001b[32m    159\u001b[39m \u001b[38;5;28;01mreturn\u001b[39;00m result\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/_media/_upload.py:135\u001b[39m, in \u001b[36mUploadBase._process_response\u001b[39m\u001b[34m(self, response)\u001b[39m\n\u001b[32m    134\u001b[39m \u001b[38;5;28mself\u001b[39m._finished = \u001b[38;5;28;01mTrue\u001b[39;00m\n\u001b[32m--> \u001b[39m\u001b[32m135\u001b[39m _helpers.require_status_code(response, (http.client.OK,), \u001b[38;5;28mself\u001b[39m._get_status_code)\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/_media/_helpers.py:105\u001b[39m, in \u001b[36mrequire_status_code\u001b[39m\u001b[34m(response, status_codes, get_status_code, callback)\u001b[39m\n\u001b[32m    104\u001b[39m         callback()\n\u001b[32m--> \u001b[39m\u001b[32m105\u001b[39m     \u001b[38;5;28;01mraise\u001b[39;00m InvalidResponse(\n\u001b[32m    106\u001b[39m         response,\n\u001b[32m    107\u001b[39m         \u001b[33m\"\u001b[39m\u001b[33mRequest failed with status code\u001b[39m\u001b[33m\"\u001b[39m,\n\u001b[32m    108\u001b[39m         status_code,\n\u001b[32m    109\u001b[39m         \u001b[33m\"\u001b[39m\u001b[33mExpected one of\u001b[39m\u001b[33m\"\u001b[39m,\n\u001b[32m    110\u001b[39m         *status_codes\n\u001b[32m    111\u001b[39m     )\n\u001b[32m    112\u001b[39m \u001b[38;5;28;01mreturn\u001b[39;00m status_code\n",
+      "\u001b[31mInvalidResponse\u001b[39m: ('Request failed with status code', 404, 'Expected one of', <HTTPStatus.OK: 200>)",
+      "\nDuring handling of the above exception, another exception occurred:\n",
+      "\u001b[31mNotFound\u001b[39m                                  Traceback (most recent call last)",
+      "\u001b[36mCell\u001b[39m\u001b[36m \u001b[39m\u001b[32mIn[41]\u001b[39m\u001b[32m, line 1\u001b[39m\n\u001b[32m----> \u001b[39m\u001b[32m1\u001b[39m MyBot.img_uploader.upload_to_firebase(\u001b[33m\"\u001b[39m\u001b[33mrefrigerator_example.jpg\u001b[39m\u001b[33m\"\u001b[39m)\n",
+      "\u001b[36mCell\u001b[39m\u001b[36m \u001b[39m\u001b[32mIn[38]\u001b[39m\u001b[32m, line 27\u001b[39m, in \u001b[36mImageUploader.upload_to_firebase\u001b[39m\u001b[34m(self, image_path)\u001b[39m\n\u001b[32m     25\u001b[39m bucket = storage.bucket()\n\u001b[32m     26\u001b[39m blob = bucket.blob(\u001b[33mf\u001b[39m\u001b[33m\"\u001b[39m\u001b[33muploads/\u001b[39m\u001b[38;5;132;01m{\u001b[39;00muuid.uuid4()\u001b[38;5;132;01m}\u001b[39;00m\u001b[38;5;132;01m{\u001b[39;00mos.path.splitext(image_path)[\u001b[32m1\u001b[39m]\u001b[38;5;132;01m}\u001b[39;00m\u001b[33m\"\u001b[39m)\n\u001b[32m---> \u001b[39m\u001b[32m27\u001b[39m blob.upload_from_filename(image_path)\n\u001b[32m     28\u001b[39m blob.make_public()\n\u001b[32m     29\u001b[39m \u001b[38;5;28;01mreturn\u001b[39;00m blob.public_url\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/blob.py:2985\u001b[39m, in \u001b[36mBlob.upload_from_filename\u001b[39m\u001b[34m(self, filename, content_type, client, predefined_acl, if_generation_match, if_generation_not_match, if_metageneration_match, if_metageneration_not_match, timeout, checksum, retry)\u001b[39m\n\u001b[32m   2890\u001b[39m \u001b[38;5;250m\u001b[39m\u001b[33;03m\"\"\"Upload this blob's contents from the content of a named file.\u001b[39;00m\n\u001b[32m   2891\u001b[39m \n\u001b[32m   2892\u001b[39m \u001b[33;03mThe content type of the upload will be determined in order\u001b[39;00m\n\u001b[32m   (...)\u001b[39m\u001b[32m   2982\u001b[39m \u001b[33;03m    to configure them.\u001b[39;00m\n\u001b[32m   2983\u001b[39m \u001b[33;03m\"\"\"\u001b[39;00m\n\u001b[32m   2984\u001b[39m \u001b[38;5;28;01mwith\u001b[39;00m create_trace_span(name=\u001b[33m\"\u001b[39m\u001b[33mStorage.Blob.uploadFromFilename\u001b[39m\u001b[33m\"\u001b[39m):\n\u001b[32m-> \u001b[39m\u001b[32m2985\u001b[39m     \u001b[38;5;28mself\u001b[39m._handle_filename_and_upload(\n\u001b[32m   2986\u001b[39m         filename,\n\u001b[32m   2987\u001b[39m         content_type=content_type,\n\u001b[32m   2988\u001b[39m         client=client,\n\u001b[32m   2989\u001b[39m         predefined_acl=predefined_acl,\n\u001b[32m   2990\u001b[39m         if_generation_match=if_generation_match,\n\u001b[32m   2991\u001b[39m         if_generation_not_match=if_generation_not_match,\n\u001b[32m   2992\u001b[39m         if_metageneration_match=if_metageneration_match,\n\u001b[32m   2993\u001b[39m         if_metageneration_not_match=if_metageneration_not_match,\n\u001b[32m   2994\u001b[39m         timeout=timeout,\n\u001b[32m   2995\u001b[39m         checksum=checksum,\n\u001b[32m   2996\u001b[39m         retry=retry,\n\u001b[32m   2997\u001b[39m     )\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/blob.py:2868\u001b[39m, in \u001b[36mBlob._handle_filename_and_upload\u001b[39m\u001b[34m(self, filename, content_type, *args, **kwargs)\u001b[39m\n\u001b[32m   2866\u001b[39m \u001b[38;5;28;01mwith\u001b[39;00m \u001b[38;5;28mopen\u001b[39m(filename, \u001b[33m\"\u001b[39m\u001b[33mrb\u001b[39m\u001b[33m\"\u001b[39m) \u001b[38;5;28;01mas\u001b[39;00m file_obj:\n\u001b[32m   2867\u001b[39m     total_bytes = os.fstat(file_obj.fileno()).st_size\n\u001b[32m-> \u001b[39m\u001b[32m2868\u001b[39m     \u001b[38;5;28mself\u001b[39m._prep_and_do_upload(\n\u001b[32m   2869\u001b[39m         file_obj,\n\u001b[32m   2870\u001b[39m         content_type=content_type,\n\u001b[32m   2871\u001b[39m         size=total_bytes,\n\u001b[32m   2872\u001b[39m         *args,\n\u001b[32m   2873\u001b[39m         **kwargs,\n\u001b[32m   2874\u001b[39m     )\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/blob.py:2707\u001b[39m, in \u001b[36mBlob._prep_and_do_upload\u001b[39m\u001b[34m(self, file_obj, rewind, size, content_type, client, predefined_acl, if_generation_match, if_generation_not_match, if_metageneration_match, if_metageneration_not_match, timeout, checksum, retry, command)\u001b[39m\n\u001b[32m   2705\u001b[39m     \u001b[38;5;28mself\u001b[39m._set_properties(created_json)\n\u001b[32m   2706\u001b[39m \u001b[38;5;28;01mexcept\u001b[39;00m InvalidResponse \u001b[38;5;28;01mas\u001b[39;00m exc:\n\u001b[32m-> \u001b[39m\u001b[32m2707\u001b[39m     _raise_from_invalid_response(exc)\n",
+      "\u001b[36mFile \u001b[39m\u001b[32m~/anaconda3/envs/fortest/lib/python3.11/site-packages/google/cloud/storage/blob.py:4887\u001b[39m, in \u001b[36m_raise_from_invalid_response\u001b[39m\u001b[34m(error)\u001b[39m\n\u001b[32m   4883\u001b[39m     error_message = \u001b[38;5;28mstr\u001b[39m(error)\n\u001b[32m   4885\u001b[39m message = \u001b[33mf\u001b[39m\u001b[33m\"\u001b[39m\u001b[38;5;132;01m{\u001b[39;00mresponse.request.method\u001b[38;5;132;01m}\u001b[39;00m\u001b[33m \u001b[39m\u001b[38;5;132;01m{\u001b[39;00mresponse.request.url\u001b[38;5;132;01m}\u001b[39;00m\u001b[33m: \u001b[39m\u001b[38;5;132;01m{\u001b[39;00merror_message\u001b[38;5;132;01m}\u001b[39;00m\u001b[33m\"\u001b[39m\n\u001b[32m-> \u001b[39m\u001b[32m4887\u001b[39m \u001b[38;5;28;01mraise\u001b[39;00m exceptions.from_http_status(response.status_code, message, response=response)\n",
+      "\u001b[31mNotFound\u001b[39m: 404 POST https://storage.googleapis.com/upload/storage/v1/b/jams-f92b1.appspot.com/o?uploadType=multipart: {\n  \"error\": {\n    \"code\": 404,\n    \"message\": \"The specified bucket does not exist.\",\n    \"errors\": [\n      {\n        \"message\": \"The specified bucket does not exist.\",\n        \"domain\": \"global\",\n        \"reason\": \"notFound\"\n      }\n    ]\n  }\n}\n: ('Request failed with status code', 404, 'Expected one of', <HTTPStatus.OK: 200>)"
+     ]
+    }
+   ],
+   "source": [
+    "MyBot.img_uploader.upload_to_firebase(\"refrigerator_example.jpg\")"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 46,
+   "id": "4f49b782",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "버킷 이름: jams-f92b1.appspot.com\n"
+     ]
+    }
+   ],
+   "source": [
+    "from firebase_admin import storage\n",
+    "bucket = storage.bucket()\n",
+    "print(\"버킷 이름:\", bucket.name)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "d12823d0",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "fortest",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.11.13"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
