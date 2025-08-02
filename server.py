@@ -43,7 +43,7 @@ async def generate(prompt: Prompt):
     try:
         bot = ChefBot(model_name="gpt-4o", temperature=1.0, key=config.get_gptapi(), uuid=config.get_myuuid())
         # 실제 추론 호출 (메서드 이름 확인)
-        answer = bot.chat(prompt.text)
+        answer = bot.get_response(prompt.text)
         return {"output": answer}
 
     except Exception as e:
