@@ -8,6 +8,8 @@ import logging
 #    mangae.py 안의 클래스/함수 이름을 확인해서 바꿔주세요.
 from LLMClass import ChefBot
 
+import config
+
 # 2) 요청 바디 스키마 정의
 class Prompt(BaseModel):
     text: str
@@ -39,9 +41,7 @@ async def generate(prompt: Prompt):
         raise HTTPException(status_code=500, detail="시스템 프롬프트 로딩 실패")
 
     try:
-        apikey = open("C:/UNIV/2025_summer_vacation/Competition/2025 MetaverseDev/gptapi.txt", "r").read().strip()
-        myuuid = open("C:/UNIV/2025_summer_vacation/Competition/2025 MetaverseDev/myuuid.txt", "r").read().strip()
-        bot = ChefBot(model_name="gpt-4o", temperature=1.0, key=apikey, uuid=myuuid)
+        bot = ChefBot(model_name="gpt-4o", temperature=1.0, key=config.get_gptapi(), uuid=config.get_myuuid())
         # 실제 추론 호출 (메서드 이름 확인)
         answer = bot.chat(prompt.text)
         return {"output": answer}

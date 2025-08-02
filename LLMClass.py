@@ -5,14 +5,14 @@ import firebase_admin
 from firebase_admin import credentials, storage
 import uuid
 import os
-
+import json
+import config
 def encode_image_to_base64(path):
     with open(path, "rb") as image_file:
         encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
     return encoded_string
-
 if not firebase_admin._apps:
-    cred = credentials.Certificate("C:/UNIV/2025_summer_vacation/Competition/2025 MetaverseDev/jams-f92b1-firebase-adminsdk-fbsvc-8651bbf671.json")
+    cred = credentials.Certificate(config.get_firebase())
     firebase_admin.initialize_app(cred, {
         'storageBucket': 'jams-f92b1.firebasestorage.app'
     })
@@ -117,7 +117,7 @@ class ChefBot(LLMChatBot):
     def init_system_prompt(self, system_prompt_path):
         if self.have_system_prompt():
             self.pop_message_front()
-        self.add_message_front("system",open(system_prompt_path, "r",encoding="UTF-8").read())
+        self.add_message_front("system",open(system_prompt_path, "r").read())
 
     def get_response_realtime_vision(self, query, image_path="vision.png", text_store=True, image_store=False):
         """
@@ -126,10 +126,3 @@ class ChefBot(LLMChatBot):
         """
 
         return self.get_response_vision(query, image_path, text_store, image_store)
-    
-
-if __name__=="__main__":
-    apikey = open("C:/UNIV/2025_summer_vacation/Competition/2025 MetaverseDev/gptapi.txt", "r").read().strip()
-    myuuid = open("C:/UNIV/2025_summer_vacation/Competition/2025 MetaverseDev/myuuid.txt", "r").read().strip()
-    MyBot = ChefBot(model_name="gpt-4o", temperature=1.0, key=apikey, uuid=myuuid)
-    
