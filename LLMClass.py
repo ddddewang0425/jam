@@ -117,7 +117,7 @@ class ChefBot(LLMChatBot):
     def init_system_prompt(self, system_prompt_path):
         if self.have_system_prompt():
             self.pop_message_front()
-        self.add_message_front("system",open(system_prompt_path, "r").read())
+        self.add_message_front("system",open(system_prompt_path, "r",encoding="utf-8").read())
 
     def get_response_realtime_vision(self, query, image_path="vision.png", text_store=True, image_store=False):
         """
